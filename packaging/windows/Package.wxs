@@ -12,6 +12,9 @@
           <Component Id="License" Guid="*"><File Source="$(var.PublishDir)/LICENSE" /></Component>
           <Component Id="Configuration" Guid="*"><File Source="$(var.PublishDir)/mcp-config.json" /></Component>
           <Component Id="Notices" Guid="*"><File Source="$(var.PublishDir)/THIRD-PARTY-NOTICES.txt" /></Component>
+          <Directory Id="Documentation" Name="docs">
+            <Component Id="Operations" Guid="*"><File Source="$(var.PublishDir)/docs/operations.md" /></Component>
+          </Directory>
           <Component Id="Path" Guid="*">
             <RegistryValue Root="HKLM" Key="Software\vornet\MemoryForge" Name="Version" Type="string" Value="$(var.Version)" KeyPath="yes" />
             <Environment Id="MemoryForgePath" Name="PATH" Value="[INSTALLFOLDER]" Part="last" Action="set" System="yes" />
@@ -22,6 +25,7 @@
       <ComponentRef Id="Server" /><ComponentRef Id="Readme" />
       <ComponentRef Id="License" /><ComponentRef Id="Configuration" />
       <ComponentRef Id="Notices" /><ComponentRef Id="Path" />
+      <ComponentRef Id="Operations" />
     </Feature>
   </Package>
 </Wix>

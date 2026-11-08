@@ -12,9 +12,23 @@ New-Item -ItemType Directory -Force -Path $output, $packages | Out-Null
 dotnet publish src/MemoryForge.Server -c Release -r $Runtime --self-contained true -o $output `
     -p:Version=$Version -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None
 Copy-Item -LiteralPath README.md, LICENSE -Destination $output
+Copy-Item -LiteralPath docs -Destination $output -Recurse -Force
 $executable = if ($Runtime.StartsWith('win')) { 'memoryforge.exe' } else { 'memoryforge' }
 $command = if ($Runtime.StartsWith('win')) { 'C:/Program Files/MemoryForge/memoryforge.exe' } elseif ($Runtime.StartsWith('osx')) { '/usr/local/bin/memoryforge' } else { '/usr/bin/memoryforge' }
 Copy-Item -LiteralPath THIRD-PARTY-NOTICES.txt -Destination $output
+$assets = Get-Content src/MemoryForge.Server/obj/project.assets.json -Raw | ConvertFrom-Json -AsHashtable
+$runtimePackage = $assets.libraries.GetEnumerator() | Where-Object { $_.Key.StartsWith("Microsoft.NETCore.App.Runtime.$Runtime/", [StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1
+if ($runtimePackage) {
+    $packageRoot = @($assets.packageFolders.Keys)[0]
+    $runtimeRoot = Join-Path $packageRoot $runtimePackage.Value.path
+    foreach ($notice in @('LICENSE.TXT','THIRD-PARTY-NOTICES.TXT')) {
+        $noticePath = Join-Path $runtimeRoot $notice
+        if (Test-Path -LiteralPath $noticePath) {
+            Add-Content -LiteralPath "$output/THIRD-PARTY-NOTICES.txt" -Value "`nBundled runtime $($runtimePackage.Key): $notice`n"
+            Get-Content -LiteralPath $noticePath -Raw | Add-Content -LiteralPath "$output/THIRD-PARTY-NOTICES.txt"
+        }
+    }
+}
 @{ mcpServers = @{ memoryforge = @{ command = $command; args = @() } } } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $output 'mcp-config.json') -Encoding utf8
 if ($Runtime.StartsWith('win')) {
     dotnet tool restore
@@ -30,7 +44,7 @@ if ($Runtime.StartsWith('win')) {
     $library = if ($Runtime.StartsWith('osx')) { 'usr/local/lib/memoryforge' } else { 'usr/lib/memoryforge' }
     $bin = if ($Runtime.StartsWith('osx')) { 'usr/local/bin' } else { 'usr/bin' }
     New-Item -ItemType Directory -Force -Path "$staging/$library", "$staging/$bin" | Out-Null
-    Copy-Item -Path "$output/*" -Destination "$staging/$library"
+    Copy-Item -Path "$output/*" -Destination "$staging/$library" -Recurse -Force
     $linkTarget = if ($Runtime.StartsWith('osx')) { '../lib/memoryforge/memoryforge' } else { '../lib/memoryforge/memoryforge' }
     ln -sf $linkTarget "$staging/$bin/memoryforge"
     if ($Runtime.StartsWith('osx')) {
