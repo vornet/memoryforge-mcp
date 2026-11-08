@@ -1,0 +1,27 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="MemoryForge MCP" Manufacturer="vornet" Version="$(var.Version)"
+           UpgradeCode="DFB49AE9-4540-4D53-936C-C873567F0C4D" Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer MemoryForge version is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <StandardDirectory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="MemoryForge">
+          <Component Id="Server" Guid="*">
+            <File Id="ServerExe" Source="$(var.PublishDir)/memoryforge.exe" KeyPath="yes" />
+          </Component>
+          <Component Id="Readme" Guid="*"><File Source="$(var.PublishDir)/README.md" /></Component>
+          <Component Id="License" Guid="*"><File Source="$(var.PublishDir)/LICENSE" /></Component>
+          <Component Id="Configuration" Guid="*"><File Source="$(var.PublishDir)/mcp-config.json" /></Component>
+          <Component Id="Notices" Guid="*"><File Source="$(var.PublishDir)/THIRD-PARTY-NOTICES.txt" /></Component>
+          <Component Id="Path" Guid="*">
+            <RegistryValue Root="HKLM" Key="Software\vornet\MemoryForge" Name="Version" Type="string" Value="$(var.Version)" KeyPath="yes" />
+            <Environment Id="MemoryForgePath" Name="PATH" Value="[INSTALLFOLDER]" Part="last" Action="set" System="yes" />
+          </Component>
+        </Directory>
+    </StandardDirectory>
+    <Feature Id="Main" Title="MemoryForge MCP" Level="1">
+      <ComponentRef Id="Server" /><ComponentRef Id="Readme" />
+      <ComponentRef Id="License" /><ComponentRef Id="Configuration" />
+      <ComponentRef Id="Notices" /><ComponentRef Id="Path" />
+    </Feature>
+  </Package>
+</Wix>

@@ -1,0 +1,158 @@
+name: Build and release
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Test and package (${{ matrix.rid }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            rid: win-x64
+          - os: ubuntu-24.04
+            rid: linux-x64
+          - os: ubuntu-24.04-arm
+            rid: linux-arm64
+          - os: macos-15-intel
+            rid: osx-x64
+          - os: macos-15
+            rid: osx-arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    env:
+      VERSION: 1.0.${{ github.run_number }}
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Restore locked dependencies
+        run: dotnet restore --locked-mode
+      - name: Build
+        run: dotnet build -c Release --no-restore -p:Version=${{ env.VERSION }} -p:ContinuousIntegrationBuild=true
+      - name: Unit and native tests
+        run: dotnet test -c Release --no-build --logger trx --results-directory TestResults
+      - name: Dependency vulnerability gate
+        if: matrix.rid == 'linux-x64'
+        run: python3 scripts/check-dependencies.py
+      - name: Create native installer and portable archive
+        shell: pwsh
+        run: ./scripts/package.ps1 -Runtime '${{ matrix.rid }}' -Version $env:VERSION
+      - name: Smoke test Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msi = (Get-ChildItem artifacts/packages/*.msi).FullName
+          $installed = 'C:/Program Files/MemoryForge/memoryforge.exe'
+          $process = Start-Process msiexec.exe -ArgumentList @('/i', "`"$msi`"", '/qn', '/norestart', '/l*v', 'artifacts/install.log') -Wait -PassThru -WindowStyle Hidden
+          if ($process.ExitCode -notin @(0,3010)) { Get-Content artifacts/install.log -Tail 100; throw "MSI failed: $($process.ExitCode)" }
+          try {
+            & $installed --doctor
+            if ($LASTEXITCODE) { throw 'Installed diagnostic failed' }
+            python scripts/smoke.py --server $installed --fixture tests/MemoryForge.Fixture/bin/Release/net10.0/MemoryForge.Fixture.exe
+            if ($LASTEXITCODE) { throw 'Installed MCP smoke failed' }
+          } finally {
+            $process = Start-Process msiexec.exe -ArgumentList @('/x', "`"$msi`"", '/qn', '/norestart') -Wait -PassThru -WindowStyle Hidden
+            if ($process.ExitCode -notin @(0,3010)) { throw "Uninstall failed: $($process.ExitCode)" }
+          }
+          if (Test-Path -LiteralPath $installed) { throw 'Uninstall left executable behind' }
+      - name: Smoke test Linux installer
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y ./artifacts/packages/*.deb
+          memoryforge --doctor
+          python3 scripts/smoke.py --server /usr/bin/memoryforge --fixture tests/MemoryForge.Fixture/bin/Release/net10.0/MemoryForge.Fixture
+          sudo apt-get remove -y memoryforge-mcp
+          test ! -e /usr/bin/memoryforge
+      - name: Smoke test macOS installer against authorized fixture
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          codesign --force --sign - --options runtime --entitlements packaging/macos/fixture.entitlements tests/MemoryForge.Fixture/bin/Release/net10.0/MemoryForge.Fixture
+          sudo installer -pkg artifacts/packages/*.pkg -target /
+          /usr/local/bin/memoryforge --doctor
+          sudo "$(command -v python3)" scripts/smoke.py --server /usr/local/bin/memoryforge --fixture tests/MemoryForge.Fixture/bin/Release/net10.0/MemoryForge.Fixture
+          test -L /usr/local/bin/memoryforge
+          sudo unlink /usr/local/bin/memoryforge
+          sudo find /usr/local/lib/memoryforge -type f -delete
+          sudo rmdir /usr/local/lib/memoryforge
+          sudo pkgutil --forget us.vorn.memoryforge
+          test ! -e /usr/local/bin/memoryforge
+      - name: Dependency inventory
+        if: matrix.rid == 'linux-x64'
+        shell: bash
+        run: dotnet list src/MemoryForge.Server package --include-transitive --format json > artifacts/packages/dependencies.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: packages-${{ matrix.rid }}
+          path: artifacts/packages/*
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: test-results-${{ matrix.rid }}
+          path: |
+            TestResults/*.trx
+            artifacts/install.log
+          retention-days: 14
+
+  release:
+    name: Publish release
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    concurrency:
+      group: publish-memoryforge
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: 1.0.${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: packages-*
+          merge-multiple: true
+          path: release
+      - name: Checksums
+        working-directory: release
+        run: sha256sum * > SHA256SUMS
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-path: release/*
+      - name: Publish immutable release
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<'EOF'
+          Agent-first .NET 10 local MCP memory tools for Windows x64, Linux x64/ARM64, macOS Intel/ARM64.
+
+          Includes 19 tools: process discovery, memory maps/modules, typed reads, background scans/refinements, wildcard patterns, pointer chains, bounded observation, guarded writes and conditional undo.
+
+          All five native build/test/package/installer checks passed before publication. Installers are not commercially code-signed or Apple-notarized. macOS executables are ad-hoc signed; OS target-attachment restrictions apply. See README and docs/operations.md for setup, permissions and scope.
+
+          The AI host provides game interpretation, web research and gameplay verification. A verified memory write does not itself prove a gameplay change.
+          EOF
+          gh release create "v$VERSION" release/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "MemoryForge $VERSION" --notes-file release-notes.md
